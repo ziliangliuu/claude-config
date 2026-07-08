@@ -9,8 +9,10 @@
 |------|------|-----------|
 | 启动 IP 校验 | [`claude-exit-ip-guard/需求.md`](./claude-exit-ip-guard/需求.md) | 两层防护：启动前 + 运行中每次发消息前校验出口 IP，不是 `YOUR_EXIT_IP` 就阻止 |
 | 网络分流 + 防泄露 | [`Clash网络配置需求.md`](./Clash网络配置需求.md) | Clash TUN+规则模式：国内直连、非国内走 VPN；浏览器防 WebRTC 泄露 |
+| 状态栏用量 Hub | [`claude-statusline/需求.md`](./claude-statusline/需求.md) | Claude Code 底部状态栏：模型/上下文/5小时+每周配额**剩余**百分比与重置倒计时，`bash install.sh` 一键装 |
 
 `claude-exit-ip-guard/` 里还含两个可直接安装的脚本：`claude-guard.sh`（macOS/Linux）、`claude-guard.ps1`（Windows）。
+`claude-statusline/` 里含脚本本体 `statusline.sh` 和一键安装脚本 `install.sh`。
 
 ## 在新电脑上怎么用
 
@@ -40,6 +42,9 @@
 
 5. **浏览器**
    - WebRTC 防泄露按实际浏览器选方案：Chrome/Edge 装扩展，Firefox 改 `about:config`。
+
+6. **状态栏依赖**
+   - `claude-statusline` 需要 `jq`（macOS `brew install jq`，Linux 用包管理器）；原生 Windows 需 Git Bash + jq，优先走 WSL。
 
 ## 核心原则（跨机器通用，别踩的坑）
 
