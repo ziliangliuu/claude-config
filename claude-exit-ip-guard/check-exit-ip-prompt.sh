@@ -3,7 +3,12 @@
 # 用途：覆盖「窗口长时间开着、运行中网络切换」的盲区——启动时的 wrapper 只查一次，
 #       这个 hook 在你每次发消息前再查一次，VPN 断了就拦下本次提交。
 # 安装：放到 ~/.claude/hooks/ 下，并在 ~/.claude/settings.json 注册 UserPromptSubmit（见 需求.md）。
-EXPECTED_IP="YOUR_EXIT_IP"
+# 期望出口 IP 从单一来源文件读取（与启动层 claude-guard.sh 共用同一文件）
+EXPECTED_IP="$(cat "$HOME/.claude/hooks/expected-exit-ip" 2>/dev/null | tr -d '[:space:]')"
+if [ -z "$EXPECTED_IP" ]; then
+  printf '{"decision":"block","reason":"未配置期望出口 IP（~/.claude/hooks/expected-exit-ip 缺失或为空），已拦截。请先配置该文件。"}\n'
+  exit 0
+fi
 
 ip="$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null | tr -d '[:space:]')"
 

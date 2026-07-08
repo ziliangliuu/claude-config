@@ -4,7 +4,13 @@
 # 原理：定义与命令同名的函数 claude；启动前先查出口 IP，不符则 return 1 不启动；
 #       相符时用 `command claude` 走 PATH 调用真正的可执行文件（避免函数递归）。
 claude() {
-    local expected_ip="YOUR_EXIT_IP"
+    # 期望出口 IP 从单一来源文件读取（启动层与运行中层共用，改 IP 只改这一个文件）
+    local expected_ip
+    expected_ip="$(cat "$HOME/.claude/hooks/expected-exit-ip" 2>/dev/null | tr -d '[:space:]')"
+    if [ -z "$expected_ip" ]; then
+        printf '\033[31m❌ 未配置期望出口 IP（~/.claude/hooks/expected-exit-ip 缺失或为空），已阻止启动。\033[0m\n' >&2
+        return 1
+    fi
     local log="$HOME/.claude/hooks/check-exit-ip.log"
     local ip
     ip="$(curl -s --max-time 8 https://api.ipify.org 2>/dev/null | tr -d '[:space:]')"

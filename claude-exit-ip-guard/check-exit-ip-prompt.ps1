@@ -1,7 +1,14 @@
-﻿# UserPromptSubmit hook（Windows PowerShell）：每次提交消息前校验出口 IP。
+﻿﻿# UserPromptSubmit hook（Windows PowerShell）：每次提交消息前校验出口 IP。
 # 用途：覆盖「窗口长时间开着、运行中网络切换」的盲区。VPN 断了就拦下本次提交。
 # 安装：放到 %USERPROFILE%\.claude\hooks\ 下，并在 settings.json 注册 UserPromptSubmit（见 需求.md）。
-$expectedIp = "YOUR_EXIT_IP"
+# 期望出口 IP 从单一来源文件读取（与启动层 claude-guard.ps1 共用同一文件）
+$ipFile = Join-Path $HOME ".claude\hooks\expected-exit-ip"
+$expectedIp = Get-Content $ipFile -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($expectedIp) { $expectedIp = $expectedIp.Trim() }
+if (-not $expectedIp) {
+    '{"decision":"block","reason":"未配置期望出口 IP，已拦截。请先配置 ~/.claude/hooks/expected-exit-ip。"}'
+    exit 0
+}
 
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
 

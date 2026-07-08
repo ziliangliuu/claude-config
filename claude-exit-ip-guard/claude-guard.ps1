@@ -1,4 +1,4 @@
-﻿# === Claude Code 出口 IP 校验（不匹配则阻止启动）BEGIN ===
+﻿﻿# === Claude Code 出口 IP 校验（不匹配则阻止启动）BEGIN ===
 # 适用：Windows PowerShell 5.1 / PowerShell 7+。
 # 安装：把本段内容追加到 PowerShell 配置文件 $PROFILE，然后【新开 PowerShell 窗口】。
 #   查看/创建配置文件：
@@ -9,7 +9,14 @@
 # 原理：定义与命令同名的函数 claude；启动前查出口 IP，不符则直接返回不启动；
 #       相符时用 Get-Command -CommandType Application 找到真正的 claude.cmd 调用（避免递归）。
 function claude {
-    $expectedIp = "YOUR_EXIT_IP"
+    # 期望出口 IP 从单一来源文件读取（启动层与运行中层共用，改 IP 只改这一个文件）
+    $ipFile = Join-Path $HOME ".claude\hooks\expected-exit-ip"
+    $expectedIp = Get-Content $ipFile -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($expectedIp) { $expectedIp = $expectedIp.Trim() }
+    if (-not $expectedIp) {
+        Write-Host "X 未配置期望出口 IP（~/.claude/hooks/expected-exit-ip 缺失或为空），已阻止启动。" -ForegroundColor Red
+        return
+    }
     $logDir = Join-Path $HOME ".claude\hooks"
     $log    = Join-Path $logDir "check-exit-ip.log"
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
