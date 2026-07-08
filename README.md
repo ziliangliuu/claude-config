@@ -7,7 +7,7 @@
 
 | 配置 | 文档 | 一句话说明 |
 |------|------|-----------|
-| 启动 IP 校验 | [`claude-exit-ip-guard/需求.md`](./claude-exit-ip-guard/需求.md) | 启动 `claude` 前校验出口 IP，不是 `YOUR_EXIT_IP` 就阻止启动 |
+| 启动 IP 校验 | [`claude-exit-ip-guard/需求.md`](./claude-exit-ip-guard/需求.md) | 两层防护：启动前 + 运行中每次发消息前校验出口 IP，不是 `YOUR_EXIT_IP` 就阻止 |
 | 网络分流 + 防泄露 | [`Clash网络配置需求.md`](./Clash网络配置需求.md) | Clash TUN+规则模式：国内直连、非国内走 VPN；浏览器防 WebRTC 泄露 |
 
 `claude-exit-ip-guard/` 里还含两个可直接安装的脚本：`claude-guard.sh`（macOS/Linux）、`claude-guard.ps1`（Windows）。
@@ -43,7 +43,8 @@
 
 ## 核心原则（跨机器通用，别踩的坑）
 
-- Claude Code 的启动拦截：**用 shell 函数包装**，不要用 SessionStart 钩子（钩子拦不住启动）。
+- Claude Code 的**启动**拦截：**用 shell 函数包装**，不要用 SessionStart 钩子（`continue:false` 拦不住启动）。
+- Claude Code 的**运行中**拦截：用 `UserPromptSubmit` 钩子，它的 `decision:block` 能真正拦住每次提交（覆盖长开窗口、中途断网）。
 - Clash 改模式：**GUI 里改并重启验证**，只用 API 改 `mode` 不持久、会回退。
 - 选择组**不能是 REJECT**，否则对应流量被拒。
 - WebRTC 防泄露**在浏览器层做**，别指望 Clash 规则堵 STUN（堵不干净）。
