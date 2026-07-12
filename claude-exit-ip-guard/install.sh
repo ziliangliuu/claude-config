@@ -102,10 +102,15 @@ case "$(basename "${SHELL:-}")" in
 esac
 touch "$RC"
 if grep -qF "$BEGIN_MARK" "$RC"; then
-    tmp=$(mktemp)
+    tmp=$(mktemp); warn=$(mktemp)
     awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
         index($0,b){skip=1} skip==0{print} index($0,e){skip=0}
-    ' "$RC" > "$tmp" && mv "$tmp" "$RC"
+        END{ if (skip==1) print "1" > "/dev/stderr" }
+    ' "$RC" 2>"$warn" > "$tmp" && mv "$tmp" "$RC"
+    if [ -s "$warn" ]; then
+        echo "⚠️  $RC 里检测到未闭合的旧块（有 BEGIN 无 END），其后内容已随之清理，请留意是否误删。"
+    fi
+    rm -f "$warn"
     echo "🧹 已清理 $RC 中的旧 IP 校验块（去重）"
 fi
 # 去掉 rc 末尾多余空行，保证与追加块之间只隔一个空行（多次运行不累积空行）

@@ -119,9 +119,15 @@ while ($clean.Count -gt 0 -and $clean[$clean.Count - 1].Trim() -eq "") { $clean.
 if (($profileLines | Where-Object { $_ -like "*Claude Code 出口 IP 校验*BEGIN ===*" }).Count -gt 0) {
     Write-Host "🧹 已清理 $PROFILE 中的旧 IP 校验块（去重）" -ForegroundColor Cyan
 }
-Set-Content -Path $PROFILE -Value $clean -Encoding utf8
-Add-Content -Path $PROFILE -Value "" -Encoding utf8
-Add-Content -Path $PROFILE -Value (Get-Content -Raw -Encoding UTF8 ".\claude-guard.ps1") -Encoding utf8
+# 一次性拼好整篇再写，避免 PS 5.1 的 Add-Content -Encoding utf8 在每次追加处插入杂散 BOM。
+# 用带 BOM 的 UTF-8 写整个文件（仅开头一个 BOM），PS5.1 读回自身 profile 的中文不乱码。
+$guardText = Get-Content -Raw -Encoding UTF8 ".\claude-guard.ps1"
+if ($clean.Count -gt 0) {
+    $newProfile = ($clean -join "`r`n") + "`r`n`r`n" + $guardText
+} else {
+    $newProfile = $guardText
+}
+[System.IO.File]::WriteAllText($PROFILE, $newProfile, (New-Object System.Text.UTF8Encoding($true)))
 Write-Host "OK 已把启动层函数写入 $PROFILE（先清旧块再写，去重）" -ForegroundColor Green
 
 Write-Host ""
