@@ -76,8 +76,15 @@ if [ "$HAS_JQ" = "1" ]; then
     if [ -f "$SETTINGS" ]; then
         cp "$SETTINGS" "$SETTINGS.bak"
         tmp=$(mktemp)
-        jq --argjson h "$HOOK_JSON" '.hooks.UserPromptSubmit = [$h]' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
-        echo "✅ 已合并 UserPromptSubmit 钩子到 $SETTINGS（原文件备份为 settings.json.bak）"
+        # 去重式合并：只移除本脚本自己装的旧钩子（command 含 check-exit-ip-prompt.sh），
+        # 保留用户已有的其它 UserPromptSubmit 钩子，再追加最新的一条。
+        jq --argjson h "$HOOK_JSON" '
+            .hooks.UserPromptSubmit = (
+              ((.hooks.UserPromptSubmit // [])
+                | map(select(all(.hooks[]?; ((.command // "") | contains("check-exit-ip-prompt.sh")) | not))))
+              + [$h]
+            )' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+        echo "✅ 已合并 UserPromptSubmit 钩子到 $SETTINGS（去重保留其它钩子；原文件备份为 settings.json.bak）"
     else
         echo "{\"hooks\":{\"UserPromptSubmit\":[$HOOK_JSON]}}" | jq . > "$SETTINGS"
         echo "✅ 已创建 $SETTINGS 并写入 UserPromptSubmit 钩子"
@@ -101,6 +108,9 @@ if grep -qF "$BEGIN_MARK" "$RC"; then
     ' "$RC" > "$tmp" && mv "$tmp" "$RC"
     echo "🧹 已清理 $RC 中的旧 IP 校验块（去重）"
 fi
+# 去掉 rc 末尾多余空行，保证与追加块之间只隔一个空行（多次运行不累积空行）
+tmp=$(mktemp)
+awk '{lines[NR]=$0} END{last=NR; while(last>0 && lines[last] ~ /^[[:space:]]*$/) last--; for(i=1;i<=last;i++) print lines[i]}' "$RC" > "$tmp" && mv "$tmp" "$RC"
 printf '\n' >> "$RC"
 cat claude-guard.sh >> "$RC"
 echo "✅ 已把启动层函数写入 $RC"

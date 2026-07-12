@@ -11,8 +11,8 @@
 | 网络分流 + 防泄露 | [`Clash网络配置需求.md`](./Clash网络配置需求.md) | Clash TUN+规则模式：国内直连、非国内走 VPN；浏览器防 WebRTC 泄露 |
 | 状态栏用量 Hub | [`claude-statusline/需求.md`](./claude-statusline/需求.md) | Claude Code 底部状态栏：模型/上下文/5小时+每周配额**剩余**百分比与重置倒计时，`bash install.sh` 一键装 |
 
-`claude-exit-ip-guard/` 里含：一键安装脚本 `install.sh`（macOS/Linux，幂等、自动去重）、
-启动层 `claude-guard.sh`/`claude-guard.ps1`、运行中层钩子 `check-exit-ip-prompt.sh`/`check-exit-ip-prompt.ps1`。
+`claude-exit-ip-guard/` 里含：一键安装脚本 `install.sh`（macOS/Linux）与 `install.ps1`（Windows），
+均幂等、自动去重；启动层 `claude-guard.sh`/`claude-guard.ps1`、运行中层钩子 `check-exit-ip-prompt.sh`/`check-exit-ip-prompt.ps1`。
 `claude-statusline/` 里含脚本本体 `statusline.sh` 和一键安装脚本 `install.sh`。
 
 ## 在新电脑上怎么用
@@ -20,8 +20,9 @@
 对新电脑的 Claude Code 说：**「读一下这个目录的 README 和各需求文档，帮我在这台电脑上配好。」**
 它会按文档里的步骤 + 验证方法逐项落地。每份文档都自带「验证方法」和「已知的坑」，照着走即可。
 
-- **启动 IP 校验**：macOS/Linux 直接在 `claude-exit-ip-guard/` 下 `bash install.sh` 即可——
-  它幂等、会**先清掉 rc 里的旧块再装**（不会重复），并自动探测当前出口 IP 与期望值对比。
+- **启动 IP 校验**：在 `claude-exit-ip-guard/` 下,macOS/Linux 跑 `bash install.sh`、Windows 跑
+  `powershell -ExecutionPolicy Bypass -File .\install.ps1` 即可——两者都幂等、会**先清掉 rc/`$PROFILE`
+  里的旧块再装**（不会重复），并自动探测当前出口 IP 与期望值对比。
   期望 IP 默认 `198.65.8.45`，换线路时改 `~/.claude/hooks/expected-exit-ip` 一个文件即可。
 
 ## ⚠️ 每台机器的差异点（新电脑上这些值大概率不同，需现场探测，别照抄旧值）
@@ -43,7 +44,7 @@
 4. **订阅 / 节点 / 代理组名**
    - 出口 IP（默认 `198.65.8.45`）、节点名、带 emoji 的代理组名都来自具体订阅，**换订阅就会变**。
    - Clash 配置先用 API `/proxies`、`/rules` 列出真实组名和规则，再对号操作。
-   - IP 校验里的期望 IP 若换了线路/节点，也要同步改脚本里的 `expected_ip`。
+   - IP 校验里的期望 IP 若换了线路/节点，只改一个文件 `~/.claude/hooks/expected-exit-ip`（脚本从它读取，不在脚本里写死）。
 
 5. **浏览器**
    - WebRTC 防泄露按实际浏览器选方案：Chrome/Edge 装扩展，Firefox 改 `about:config`。
