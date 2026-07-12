@@ -12,18 +12,37 @@ if (-not $expectedIp) {
 
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
 
+# 多个出口 IP 回显服务，按顺序尝试，取第一个返回合法 IPv4 的结果（多源容错，
+# 避免单一服务临时抽风/超时导致取不到 IP 而误拦消息）。全部失败才判定探测不到。
+$ipServices = @(
+    "https://api.ipify.org"
+    "https://ifconfig.me/ip"
+    "https://icanhazip.com"
+    "https://ipinfo.io/ip"
+    "https://checkip.amazonaws.com"
+    "https://api.ip.sb/ip"
+)
 $ip = $null
-try { $ip = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 5).ToString().Trim() } catch { }
+$usedService = "NONE"
+foreach ($svc in $ipServices) {
+    try {
+        $resp = (Invoke-RestMethod -Uri $svc -TimeoutSec 3).ToString().Trim()
+        if ($resp -match '^(\d{1,3}\.){3}\d{1,3}$') { $ip = $resp; $usedService = $svc; break }
+    } catch { }
+}
 
 $logDir = Join-Path $HOME ".claude\hooks"
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
 $shownLog = if ($ip) { $ip } else { "EMPTY" }
-"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  prompt-check  detected_ip=[$shownLog]  expected=[$expectedIp]" |
+"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  prompt-check  detected_ip=[$shownLog]  expected=[$expectedIp]  source=[$usedService]" |
     Out-File -FilePath (Join-Path $logDir "check-exit-ip.log") -Append -Encoding utf8
 
 if ($ip -eq $expectedIp) { exit 0 }
 
-$shown = if ($ip) { $ip } else { "未知" }
-$reason = "网络校验未通过：当前出口 IP 为 [$shown]，要求为 [$expectedIp]。VPN 可能已断开或切换，本次消息已拦截，请恢复到正确网络后重试。"
+if (-not $ip) {
+    $reason = "网络校验未通过：所有 IP 探测服务均无响应（共尝试 $($ipServices.Count) 个），无法确认当前出口 IP。请检查网络后重试。"
+} else {
+    $reason = "网络校验未通过：当前出口 IP 为 [$ip]，要求为 [$expectedIp]。VPN 可能已断开或切换，本次消息已拦截，请恢复到正确网络后重试。"
+}
 @{ decision = "block"; reason = $reason } | ConvertTo-Json -Compress
 exit 0

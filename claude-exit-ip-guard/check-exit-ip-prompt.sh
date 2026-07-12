@@ -10,13 +10,34 @@ if [ -z "$EXPECTED_IP" ]; then
   exit 0
 fi
 
-ip="$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null | tr -d '[:space:]')"
+# 多个出口 IP 回显服务，按顺序尝试，取【第一个返回合法 IPv4】的结果即算成功（多源容错，
+# 避免单一服务临时抽风/超时导致 ip 为空而误拦消息）。只有【全部服务都失败】才判定探测不到。
+IP_SERVICES=(
+  "https://api.ipify.org"
+  "https://ifconfig.me/ip"
+  "https://icanhazip.com"
+  "https://ipinfo.io/ip"
+  "https://checkip.amazonaws.com"
+  "https://api.ip.sb/ip"
+)
+ip=""
+used_service=""
+for svc in "${IP_SERVICES[@]}"; do
+  resp="$(curl -s --max-time 3 "$svc" 2>/dev/null | tr -d '[:space:]')"
+  if printf '%s' "$resp" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+    ip="$resp"; used_service="$svc"; break
+  fi
+done
 
-printf '%s  prompt-check  detected_ip=[%s]  expected=[%s]\n' \
-    "$(date '+%F %T')" "${ip:-EMPTY}" "$EXPECTED_IP" >> "$HOME/.claude/hooks/check-exit-ip.log" 2>/dev/null
+printf '%s  prompt-check  detected_ip=[%s]  expected=[%s]  source=[%s]\n' \
+    "$(date '+%F %T')" "${ip:-EMPTY}" "$EXPECTED_IP" "${used_service:-NONE}" >> "$HOME/.claude/hooks/check-exit-ip.log" 2>/dev/null
 
 [ "$ip" = "$EXPECTED_IP" ] && exit 0
 
-reason="网络校验未通过：当前出口 IP 为 [${ip:-未知}]，要求为 [${EXPECTED_IP}]。VPN 可能已断开或切换，本次消息已拦截，请恢复到正确网络后重试。"
+if [ -z "$ip" ]; then
+  reason="网络校验未通过：所有 IP 探测服务均无响应（共尝试 ${#IP_SERVICES[@]} 个），无法确认当前出口 IP。请检查网络后重试。"
+else
+  reason="网络校验未通过：当前出口 IP 为 [${ip}]，要求为 [${EXPECTED_IP}]。VPN 可能已断开或切换，本次消息已拦截，请恢复到正确网络后重试。"
+fi
 printf '{"decision":"block","reason":"%s"}\n' "$reason"
 exit 0

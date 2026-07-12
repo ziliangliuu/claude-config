@@ -24,17 +24,36 @@ function claude {
     # PowerShell 5.1 旧环境默认可能不含 TLS 1.2，先启用，否则 https 请求恒失败被误拦
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
 
+    # 多个出口 IP 回显服务，按顺序尝试，取第一个返回合法 IPv4 的结果（多源容错，
+    # 避免单一服务临时抽风/超时导致取不到 IP 而误拦启动）。全部失败才判定探测不到。
+    $ipServices = @(
+        "https://api.ipify.org"
+        "https://ifconfig.me/ip"
+        "https://icanhazip.com"
+        "https://ipinfo.io/ip"
+        "https://checkip.amazonaws.com"
+        "https://api.ip.sb/ip"
+    )
     $ip = $null
-    try { $ip = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 8).ToString().Trim() } catch { }
+    $usedService = "NONE"
+    foreach ($svc in $ipServices) {
+        try {
+            $resp = (Invoke-RestMethod -Uri $svc -TimeoutSec 4).ToString().Trim()
+            if ($resp -match '^(\d{1,3}\.){3}\d{1,3}$') { $ip = $resp; $usedService = $svc; break }
+        } catch { }
+    }
 
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $shownLog = if ($ip) { $ip } else { "EMPTY" }
-    "$stamp  wrapper  detected_ip=[$shownLog]  expected=[$expectedIp]" |
+    "$stamp  wrapper  detected_ip=[$shownLog]  expected=[$expectedIp]  source=[$usedService]" |
         Out-File -FilePath $log -Append -Encoding utf8
 
     if ($ip -ne $expectedIp) {
-        $shown = if ($ip) { $ip } else { "未知" }
-        Write-Host "X 网络校验未通过：当前出口 IP 为 [$shown]，要求为 [$expectedIp]。" -ForegroundColor Red
+        if (-not $ip) {
+            Write-Host "X 网络校验未通过：所有 IP 探测服务均无响应，无法确认当前出口 IP。" -ForegroundColor Red
+        } else {
+            Write-Host "X 网络校验未通过：当前出口 IP 为 [$ip]，要求为 [$expectedIp]。" -ForegroundColor Red
+        }
         Write-Host "   已阻止启动 Claude Code，请切换到出口 IP 为 $expectedIp 的网络/代理后重试。" -ForegroundColor Yellow
         return
     }
