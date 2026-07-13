@@ -18,19 +18,37 @@ IP_FILE="$HOME/.claude/hooks/expected-exit-ip"
 BEGIN_MARK="# === Claude Code 出口 IP 校验（不匹配则阻止启动）BEGIN ==="
 END_MARK="# === Claude Code 出口 IP 校验 END ==="
 
-# 多源探测函数（与脚本内实现一致：取首个返回合法 IPv4 的服务）
+# 合法 IPv4 校验（逐段 0-255）。grep 定形状 + 参数展开逐段范围校验（bash/zsh 通用）。
+valid_ipv4() {
+    printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+    local rest="$1" o
+    while [ -n "$rest" ]; do
+        o="${rest%%.*}"
+        [ "$o" -le 255 ] 2>/dev/null || return 1
+        case "$rest" in *.*) rest="${rest#*.}" ;; *) rest="" ;; esac
+    done
+    return 0
+}
+
+# 多源探测函数（与脚本内实现一致）：**并发**请求全部服务，全部完成后按优先级取首个合法 IPv4。
 detect_exit_ip() {
     local services=(
         "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com"
         "https://ipinfo.io/ip"  "https://checkip.amazonaws.com" "https://api.ip.sb/ip"
     )
-    local svc resp
+    local svc resp d i=0 j=0
+    d="$(mktemp -d)"
     for svc in "${services[@]}"; do
-        resp="$(curl -s --max-time 4 "$svc" 2>/dev/null | tr -d '[:space:]')"
-        if printf '%s' "$resp" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-            printf '%s' "$resp"; return 0
-        fi
+        ( curl -s --max-time 4 "$svc" 2>/dev/null | tr -d '[:space:]' > "$d/$i" ) &
+        i=$((i + 1))
     done
+    wait
+    for svc in "${services[@]}"; do
+        resp="$(cat "$d/$j" 2>/dev/null)"
+        j=$((j + 1))
+        if valid_ipv4 "$resp"; then printf '%s' "$resp"; rm -rf "$d"; return 0; fi
+    done
+    rm -rf "$d"
     return 1
 }
 
@@ -74,7 +92,8 @@ SETTINGS="$HOME/.claude/settings.json"
 HOOK_JSON="{\"hooks\":[{\"type\":\"command\",\"command\":\"bash ~/.claude/hooks/check-exit-ip-prompt.sh\",\"timeout\":$HOOK_TIMEOUT}]}"
 if [ "$HAS_JQ" = "1" ]; then
     if [ -f "$SETTINGS" ]; then
-        cp "$SETTINGS" "$SETTINGS.bak"
+        # 仅在首次备份，避免重复安装时用「已改过」的版本覆盖掉最初的原始备份
+        [ -f "$SETTINGS.bak" ] || cp "$SETTINGS" "$SETTINGS.bak"
         tmp=$(mktemp)
         # 去重式合并：只移除本脚本自己装的旧钩子（command 含 check-exit-ip-prompt.sh），
         # 保留用户已有的其它 UserPromptSubmit 钩子，再追加最新的一条。

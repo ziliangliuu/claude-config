@@ -21,19 +21,33 @@ $endMark   = "# === Claude Code 出口 IP 校验 END ==="
 # PowerShell 5.1 旧环境默认可能不含 TLS 1.2，先启用，否则 https 请求恒失败
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
 
+# 合法 IPv4 校验（逐段 0-255，用 [0-9] 而非 \d 以免匹配全角数字）
+function Test-ValidIPv4([string]$s) {
+    if ($s -notmatch '^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$') { return $false }
+    foreach ($o in $Matches[1..4]) { if ([int]$o -gt 255) { return $false } }
+    return $true
+}
+
 function Get-ExitIp {
-    # 多源：按顺序尝试，取第一个返回合法 IPv4 的服务
+    # 多源：**并发**请求全部服务（HttpClient 异步），全部完成/超时后按优先级取首个合法 IPv4。
     $services = @(
         "https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com",
         "https://ipinfo.io/ip",  "https://checkip.amazonaws.com", "https://api.ip.sb/ip"
     )
-    foreach ($svc in $services) {
-        try {
-            $resp = (Invoke-RestMethod -Uri $svc -TimeoutSec 4).ToString().Trim()
-            if ($resp -match '^(\d{1,3}\.){3}\d{1,3}$') { return $resp }
-        } catch { }
+    try { Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue } catch { }
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [TimeSpan]::FromSeconds(4)
+    $tasks = foreach ($svc in $services) { $client.GetStringAsync($svc) }
+    try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$tasks, 5000) } catch { }
+    $found = $null
+    for ($k = 0; $k -lt $services.Count; $k++) {
+        if ($tasks[$k].Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) {
+            $resp = $tasks[$k].Result.Trim()
+            if (Test-ValidIPv4 $resp) { $found = $resp; break }
+        }
     }
-    return $null
+    $client.Dispose()
+    return $found
 }
 
 New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
@@ -69,16 +83,18 @@ Write-Host "--------------------------------------"
 # (3) 运行中层：拷 hook + 去重合并 settings.json 的 UserPromptSubmit
 Copy-Item ".\check-exit-ip-prompt.ps1" (Join-Path $hooksDir "check-exit-ip-prompt.ps1") -Force
 $settingsPath = Join-Path $HOME ".claude\settings.json"
+# 用嵌套 powershell 带 -ExecutionPolicy Bypass 调 .ps1，避免宿主执行策略为 Restricted 时钩子被拦。
 $newHook = [PSCustomObject]@{
     hooks = @([PSCustomObject]@{
         type    = "command"
         shell   = "powershell"
-        command = '& "$env:USERPROFILE\.claude\hooks\check-exit-ip-prompt.ps1"'
+        command = 'powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\hooks\check-exit-ip-prompt.ps1"'
         timeout = $HookTimeout
     })
 }
 if (Test-Path $settingsPath) {
-    Copy-Item $settingsPath "$settingsPath.bak" -Force
+    # 仅在首次备份，避免重复安装时用「已改过」的版本覆盖掉最初的原始备份
+    if (-not (Test-Path "$settingsPath.bak")) { Copy-Item $settingsPath "$settingsPath.bak" -Force }
     $cfg = Get-Content -Raw -Encoding UTF8 $settingsPath | ConvertFrom-Json
 } else {
     $cfg = [PSCustomObject]@{}
@@ -117,7 +133,7 @@ if ($skip) { Write-Host "!  $PROFILE 里检测到未闭合的旧块（有 BEGIN 
 # 去掉尾部空行，保证与追加块之间只隔一个空行（多次运行不累积空行）
 while ($clean.Count -gt 0 -and $clean[$clean.Count - 1].Trim() -eq "") { $clean.RemoveAt($clean.Count - 1) }
 if (($profileLines | Where-Object { $_ -like "*Claude Code 出口 IP 校验*BEGIN ===*" }).Count -gt 0) {
-    Write-Host "🧹 已清理 $PROFILE 中的旧 IP 校验块（去重）" -ForegroundColor Cyan
+    Write-Host "-- 已清理 $PROFILE 中的旧 IP 校验块（去重）" -ForegroundColor Cyan
 }
 # 一次性拼好整篇再写，避免 PS 5.1 的 Add-Content -Encoding utf8 在每次追加处插入杂散 BOM。
 # 用带 BOM 的 UTF-8 写整个文件（仅开头一个 BOM），PS5.1 读回自身 profile 的中文不乱码。

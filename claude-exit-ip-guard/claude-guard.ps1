@@ -1,4 +1,4 @@
-﻿﻿# === Claude Code 出口 IP 校验（不匹配则阻止启动）BEGIN ===
+﻿# === Claude Code 出口 IP 校验（不匹配则阻止启动）BEGIN ===
 # 适用：Windows PowerShell 5.1 / PowerShell 7+。
 # 安装：把本段内容追加到 PowerShell 配置文件 $PROFILE，然后【新开 PowerShell 窗口】。
 #   查看/创建配置文件：
@@ -24,8 +24,15 @@ function claude {
     # PowerShell 5.1 旧环境默认可能不含 TLS 1.2，先启用，否则 https 请求恒失败被误拦
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
 
-    # 多个出口 IP 回显服务，按顺序尝试，取第一个返回合法 IPv4 的结果（多源容错，
-    # 避免单一服务临时抽风/超时导致取不到 IP 而误拦启动）。全部失败才判定探测不到。
+    # 合法 IPv4 校验（逐段 0-255，用 [0-9] 而非 \d 以免匹配全角数字）
+    function Test-ValidIPv4([string]$s) {
+        if ($s -notmatch '^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$') { return $false }
+        foreach ($o in $Matches[1..4]) { if ([int]$o -gt 255) { return $false } }
+        return $true
+    }
+
+    # 多个出口 IP 回显服务。**并发**请求全部服务（HttpClient 异步），全部完成/超时后按优先级
+    # 取首个合法 IPv4，最坏耗时≈单个超时（而非 6 个累加），避免弱网下启动卡顿。
     $ipServices = @(
         "https://api.ipify.org"
         "https://ifconfig.me/ip"
@@ -36,12 +43,18 @@ function claude {
     )
     $ip = $null
     $usedService = "NONE"
-    foreach ($svc in $ipServices) {
-        try {
-            $resp = (Invoke-RestMethod -Uri $svc -TimeoutSec 4).ToString().Trim()
-            if ($resp -match '^(\d{1,3}\.){3}\d{1,3}$') { $ip = $resp; $usedService = $svc; break }
-        } catch { }
+    try { Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue } catch { }
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [TimeSpan]::FromSeconds(4)
+    $tasks = foreach ($svc in $ipServices) { $client.GetStringAsync($svc) }
+    try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$tasks, 5000) } catch { }
+    for ($k = 0; $k -lt $ipServices.Count; $k++) {
+        if ($tasks[$k].Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) {
+            $resp = $tasks[$k].Result.Trim()
+            if (Test-ValidIPv4 $resp) { $ip = $resp; $usedService = $ipServices[$k]; break }
+        }
     }
+    $client.Dispose()
 
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $shownLog = if ($ip) { $ip } else { "EMPTY" }

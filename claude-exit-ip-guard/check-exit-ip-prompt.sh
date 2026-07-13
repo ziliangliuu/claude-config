@@ -10,8 +10,21 @@ if [ -z "$EXPECTED_IP" ]; then
   exit 0
 fi
 
-# 多个出口 IP 回显服务，按顺序尝试，取【第一个返回合法 IPv4】的结果即算成功（多源容错，
-# 避免单一服务临时抽风/超时导致 ip 为空而误拦消息）。只有【全部服务都失败】才判定探测不到。
+# 合法 IPv4 校验（逐段 0-255）。用 grep 定形状 + 参数展开逐段范围校验（bash/zsh 通用，
+# 不依赖会因 shell 不同而异的 `for o in $1` 词分割）。
+_valid_ipv4() {
+  printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+  local rest="$1" o
+  while [ -n "$rest" ]; do
+    o="${rest%%.*}"
+    [ "$o" -le 255 ] 2>/dev/null || return 1
+    case "$rest" in *.*) rest="${rest#*.}" ;; *) rest="" ;; esac
+  done
+  return 0
+}
+
+# 多个出口 IP 回显服务。**并发**请求全部服务，全部完成后按优先级取首个合法 IPv4：
+# 最坏耗时≈单个 --max-time（而非 6 个累加），既容错又避免逼近钩子 timeout 造成放行。
 IP_SERVICES=(
   "https://api.ipify.org"
   "https://ifconfig.me/ip"
@@ -20,14 +33,22 @@ IP_SERVICES=(
   "https://checkip.amazonaws.com"
   "https://api.ip.sb/ip"
 )
+d="$(mktemp -d)"
+i=0
+for svc in "${IP_SERVICES[@]}"; do
+  ( curl -s --max-time 3 "$svc" 2>/dev/null | tr -d '[:space:]' > "$d/$i" ) &
+  i=$((i + 1))
+done
+wait
 ip=""
 used_service=""
+j=0
 for svc in "${IP_SERVICES[@]}"; do
-  resp="$(curl -s --max-time 3 "$svc" 2>/dev/null | tr -d '[:space:]')"
-  if printf '%s' "$resp" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-    ip="$resp"; used_service="$svc"; break
-  fi
+  resp="$(cat "$d/$j" 2>/dev/null)"
+  if _valid_ipv4 "$resp"; then ip="$resp"; used_service="$svc"; break; fi
+  j=$((j + 1))
 done
+rm -rf "$d"
 
 printf '%s  prompt-check  detected_ip=[%s]  expected=[%s]  source=[%s]\n' \
     "$(date '+%F %T')" "${ip:-EMPTY}" "$EXPECTED_IP" "${used_service:-NONE}" >> "$HOME/.claude/hooks/check-exit-ip.log" 2>/dev/null

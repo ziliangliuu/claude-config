@@ -21,9 +21,11 @@
 它会按文档里的步骤 + 验证方法逐项落地。每份文档都自带「验证方法」和「已知的坑」，照着走即可。
 
 - **启动 IP 校验**：在 `claude-exit-ip-guard/` 下,macOS/Linux 跑 `bash install.sh`、Windows 跑
-  `powershell -ExecutionPolicy Bypass -File .\install.ps1` 即可——两者都幂等、会**先清掉 rc/`$PROFILE`
-  里的旧块再装**（不会重复），并自动探测当前出口 IP 与期望值对比。
+  `powershell -ExecutionPolicy Bypass -File .\install.ps1` 即可——两者都幂等,靠 `# === … BEGIN/END ===`
+  标记**对本项目自身去重**（先删旧块再装,重复运行不叠加）,并自动探测当前出口 IP 与期望值对比。
   期望 IP 默认 `198.65.8.45`，换线路时改 `~/.claude/hooks/expected-exit-ip` 一个文件即可。
+  > 清理边界:只清「当前 shell 的那一个 rc / 当前 PowerShell 版本的 `$PROFILE`」+ 带本项目标记的块。
+  > 若你换过 shell(bash↔zsh)或 PS 版本(5.1↔7),或手写过无标记的 `claude()`,需另去对应文件清理。
 
 ## ⚠️ 每台机器的差异点（新电脑上这些值大概率不同，需现场探测，别照抄旧值）
 
