@@ -31,8 +31,11 @@ function claude {
         return $true
     }
 
-    # 多个出口 IP 回显服务。**并发**请求全部服务（HttpClient 异步），全部完成/超时后按优先级
-    # 取首个合法 IPv4，最坏耗时≈单个超时（而非 6 个累加），避免弱网下启动卡顿。
+    # 多个出口 IP 回显服务，**并发**发起请求（HttpClient 异步）。命中即放行：谁先完成、且结果
+    # 等于期望 IP，立即停止等待——原实现用 WaitAll 阻塞到全部完成/超时，最坏耗时=最慢的那个；
+    # 现在最坏耗时=最快命中的那个。只有全程没有命中时（可能被拦截），才等到全部完成/超时，
+    # 再按优先级取首个合法 IPv4 用于日志/提示（“判定拦截”要更谨慎，不能让某个慢/挂的服务在
+    # 其他服务还没回来时就提前误判）。
     $ipServices = @(
         "https://api.ipify.org"
         "https://ifconfig.me/ip"
@@ -46,12 +49,32 @@ function claude {
     try { Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue } catch { }
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds(4)
-    $tasks = foreach ($svc in $ipServices) { $client.GetStringAsync($svc) }
-    try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$tasks, 5000) } catch { }
-    for ($k = 0; $k -lt $ipServices.Count; $k++) {
+    $tasks = [System.Threading.Tasks.Task[]](foreach ($svc in $ipServices) { $client.GetStringAsync($svc) })
+
+    $pending = @(0..($tasks.Count - 1))
+    $deadline = (Get-Date).AddMilliseconds(5000)
+    while ($pending.Count -gt 0) {
+        $msLeft = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
+        if ($msLeft -le 0) { break }
+        $pendingTasks = [System.Threading.Tasks.Task[]]@(foreach ($idx in $pending) { $tasks[$idx] })
+        $completed = [System.Threading.Tasks.Task]::WaitAny($pendingTasks, $msLeft)
+        if ($completed -lt 0) { break }
+        $k = $pending[$completed]
+        $pending = @($pending | Where-Object { $_ -ne $k })
         if ($tasks[$k].Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) {
             $resp = $tasks[$k].Result.Trim()
-            if (Test-ValidIPv4 $resp) { $ip = $resp; $usedService = $ipServices[$k]; break }
+            if ((Test-ValidIPv4 $resp) -and ($resp -eq $expectedIp)) {
+                $ip = $resp; $usedService = $ipServices[$k]
+                break
+            }
+        }
+    }
+    if (-not $ip) {
+        for ($k = 0; $k -lt $ipServices.Count; $k++) {
+            if ($tasks[$k].Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) {
+                $resp = $tasks[$k].Result.Trim()
+                if (Test-ValidIPv4 $resp) { $ip = $resp; $usedService = $ipServices[$k]; break }
+            }
         }
     }
     $client.Dispose()

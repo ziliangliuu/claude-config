@@ -25,8 +25,14 @@ claude() {
     fi
     local log="$HOME/.claude/hooks/check-exit-ip.log"
 
-    # 多个出口 IP 回显服务。**并发**请求全部服务，全部完成后按优先级取首个合法 IPv4：
-    # 最坏耗时≈单个 --max-time（而非 6 个累加），避免弱网下启动卡顿。
+    # 多个出口 IP 回显服务，**并发**发起请求。命中即放行：谁先完成、且结果等于期望 IP，
+    # 立即停止等待、终止其余请求——原实现用 `wait` 阻塞到全部完成，最坏耗时=最慢的那个；
+    # 现在最坏耗时=最快命中的那个。只有全程没有命中时（可能被拦截），才等全部完成，
+    # 再按优先级取首个合法 IPv4 用于日志/提示（“判定拦截”要更谨慎，不能让某个慢/挂的
+    # 服务在其他服务还没回来时就提前误判）。
+    # 注意：本文件会被 zsh 或 bash 直接 source（无 shebang），zsh 数组默认从 1 开始、
+    # bash 从 0 开始，故有意不对 ip_services 做数字下标访问，只用 `for svc in "${arr[@]}"`
+    # 顺序遍历 + 独立整数计数器对应临时文件名，两种 shell 下行为一致。
     local ip_services=(
         "https://api.ipify.org"
         "https://ifconfig.me/ip"
@@ -35,18 +41,54 @@ claude() {
         "https://checkip.amazonaws.com"
         "https://api.ip.sb/ip"
     )
-    local ip="" used_service="" svc resp d i=0 j=0
+    local ip="" used_service="" svc resp svcname d i=0 j=0 k m total seen_count=0 pid
     d="$(mktemp -d)"
     for svc in "${ip_services[@]}"; do
-        ( curl -s --max-time 4 "$svc" 2>/dev/null | tr -d '[:space:]' > "$d/$i" ) &
+        (
+          resp="$(curl -s --max-time 4 "$svc" 2>/dev/null | tr -d '[:space:]')"
+          printf '%s\n%s\n' "$resp" "$svc" > "$d/$i.result"
+          : > "$d/$i.done"
+        ) &
+        echo "$!" > "$d/$i.pid"
         i=$((i + 1))
     done
-    wait
-    for svc in "${ip_services[@]}"; do
-        resp="$(cat "$d/$j" 2>/dev/null)"
-        j=$((j + 1))
-        if _claude_valid_ipv4 "$resp"; then ip="$resp"; used_service="$svc"; break; fi
+    total=$i
+    while [ "$seen_count" -lt "$total" ]; do
+        k=0
+        while [ "$k" -lt "$total" ]; do
+            if [ ! -f "$d/$k.seen" ] && [ -f "$d/$k.done" ]; then
+                : > "$d/$k.seen"
+                seen_count=$((seen_count + 1))
+                resp="$(sed -n '1p' "$d/$k.result" 2>/dev/null)"
+                svcname="$(sed -n '2p' "$d/$k.result" 2>/dev/null)"
+                if _claude_valid_ipv4 "$resp" && [ "$resp" = "$expected_ip" ]; then
+                    ip="$resp"; used_service="$svcname"
+                    m=0
+                    while [ "$m" -lt "$total" ]; do
+                        if [ ! -f "$d/$m.seen" ]; then
+                            pid="$(cat "$d/$m.pid" 2>/dev/null)"
+                            [ -n "$pid" ] && kill "$pid" 2>/dev/null
+                            [ -n "$pid" ] && disown "$pid" 2>/dev/null
+                        fi
+                        m=$((m + 1))
+                    done
+                    seen_count=$total
+                    break 2
+                fi
+            fi
+            k=$((k + 1))
+        done
+        [ "$seen_count" -lt "$total" ] && sleep 0.05
     done
+    if [ -z "$ip" ]; then
+        j=0
+        while [ "$j" -lt "$total" ]; do
+            resp="$(sed -n '1p' "$d/$j.result" 2>/dev/null)"
+            svcname="$(sed -n '2p' "$d/$j.result" 2>/dev/null)"
+            if _claude_valid_ipv4 "$resp"; then ip="$resp"; used_service="$svcname"; break; fi
+            j=$((j + 1))
+        done
+    fi
     rm -rf "$d"
 
     mkdir -p "$(dirname "$log")" 2>/dev/null

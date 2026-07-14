@@ -23,8 +23,12 @@ _valid_ipv4() {
   return 0
 }
 
-# 多个出口 IP 回显服务。**并发**请求全部服务，全部完成后按优先级取首个合法 IPv4：
-# 最坏耗时≈单个 --max-time（而非 6 个累加），既容错又避免逼近钩子 timeout 造成放行。
+# 多个出口 IP 回显服务，**并发**发起请求。命中即放行：谁先返回、且返回值等于期望 IP，
+# 立即放行退出，不等待其余请求——原实现用 `wait` 阻塞到全部完成，最坏耗时=最慢的那个；
+# 现在最坏耗时=最快命中的那个，通常远小于 --max-time。
+# 只有当没有任何服务命中期望 IP 时（可能被拦截），才需要等全部完成，再按优先级取首个
+# 合法 IPv4 用于日志/提示——因为“判定拦截”是更谨慎的操作，不能因为某个服务慢/挂了
+# 就在其他服务还没回来的情况下提前误判拦截。
 IP_SERVICES=(
   "https://api.ipify.org"
   "https://ifconfig.me/ip"
@@ -34,12 +38,46 @@ IP_SERVICES=(
   "https://api.ip.sb/ip"
 )
 d="$(mktemp -d)"
+trap 'rm -rf "$d"' EXIT
+
+total=${#IP_SERVICES[@]}
+pids=()
 i=0
 for svc in "${IP_SERVICES[@]}"; do
-  ( curl -s --max-time 3 "$svc" 2>/dev/null | tr -d '[:space:]' > "$d/$i" ) &
+  ( curl -s --max-time 3 "$svc" 2>/dev/null | tr -d '[:space:]' > "$d/$i"; : > "$d/$i.done" ) &
+  pids[$i]=$!
   i=$((i + 1))
 done
-wait
+
+seen=()
+remaining=$total
+while [ "$remaining" -gt 0 ]; do
+  k=0
+  while [ "$k" -lt "$total" ]; do
+    if [ -z "${seen[$k]}" ] && [ -f "$d/$k.done" ]; then
+      seen[$k]=1
+      remaining=$((remaining - 1))
+      resp="$(cat "$d/$k" 2>/dev/null)"
+      if _valid_ipv4 "$resp" && [ "$resp" = "$EXPECTED_IP" ]; then
+        m=0
+        while [ "$m" -lt "$total" ]; do
+          if [ -z "${seen[$m]}" ]; then
+            kill "${pids[$m]}" 2>/dev/null
+            disown "${pids[$m]}" 2>/dev/null
+          fi
+          m=$((m + 1))
+        done
+        printf '%s  prompt-check  detected_ip=[%s]  expected=[%s]  source=[%s]  short_circuit=yes\n' \
+            "$(date '+%F %T')" "$resp" "$EXPECTED_IP" "${IP_SERVICES[$k]}" >> "$HOME/.claude/hooks/check-exit-ip.log" 2>/dev/null
+        exit 0
+      fi
+    fi
+    k=$((k + 1))
+  done
+  [ "$remaining" -gt 0 ] && sleep 0.05
+done
+
+# 全部完成但没有一个命中期望 IP：按原优先级顺序取首个合法 IPv4，用于日志与拦截提示。
 ip=""
 used_service=""
 j=0
@@ -48,12 +86,9 @@ for svc in "${IP_SERVICES[@]}"; do
   if _valid_ipv4 "$resp"; then ip="$resp"; used_service="$svc"; break; fi
   j=$((j + 1))
 done
-rm -rf "$d"
 
 printf '%s  prompt-check  detected_ip=[%s]  expected=[%s]  source=[%s]\n' \
     "$(date '+%F %T')" "${ip:-EMPTY}" "$EXPECTED_IP" "${used_service:-NONE}" >> "$HOME/.claude/hooks/check-exit-ip.log" 2>/dev/null
-
-[ "$ip" = "$EXPECTED_IP" ] && exit 0
 
 if [ -z "$ip" ]; then
   reason="网络校验未通过：所有 IP 探测服务均无响应（共尝试 ${#IP_SERVICES[@]} 个），无法确认当前出口 IP。请检查网络后重试。"
